@@ -8,7 +8,12 @@
 //! 启动流程：spawn `node <resources>/dsh-runtime/.../bin.js web --no-open --port 0`
 //! → 壳自选空闲端口传给 dsh → 轮询端口就绪后显示窗口并跳转（不解析 stdout：node 管道下块缓冲）。
 //! 退出/更新前用 taskkill /T /F 杀掉整棵进程树（dsh 会再 spawn 孙进程）。
+//! sidecar stderr 全量写入 %APPDATA%\dsh-desktop\harness\dsh-desk-sidecar.log；
+//! 进程退出时若检测到 harness 锁冲突（task-board 独占锁，双开必崩），
+//! 用占用方 PID 给出明确提示，而不是只留一个「拒绝连接」死窗口。
 
+use std::collections::VecDeque;
+use std::io::Write;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -141,12 +146,71 @@ async fn start_dsh(app: &AppHandle) {
         }
     });
 
+    // sidecar stderr 全量落日志文件（排障用），同时内存里留尾部 60 行用于死因分析。
+    let log_path = harness_home().map(|h| h.join("dsh-desk-sidecar.log"));
+    let mut log_file = log_path.as_ref().and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
+    let mut stderr_tail: VecDeque<String> = VecDeque::with_capacity(61);
+
     while let Some(event) = rx.recv().await {
-        if let CommandEvent::Terminated(_) = event {
-            notify(app, "DSH 已退出", "服务进程意外终止，请重新启动应用");
-            break;
+        match event {
+            CommandEvent::Stderr(bytes) => {
+                let line = String::from_utf8_lossy(&bytes).to_string();
+                if let Some(f) = log_file.as_mut() {
+                    let _ = f.write_all(line.as_bytes());
+                }
+                stderr_tail.push_back(line);
+                while stderr_tail.len() > 60 {
+                    stderr_tail.pop_front();
+                }
+            }
+            CommandEvent::Terminated(_) => {
+                let tail: String = stderr_tail.iter().cloned().collect();
+                if let Some(pid) = parse_lock_owner(&tail) {
+                    // task-board 等插件对 harness 账本加独占锁：双开必崩，属预期互斥
+                    notify(
+                        app,
+                        "检测到另一个 DSH 实例正在运行",
+                        &format!(
+                            "数据目录被进程 PID {pid} 占用，DSH 不能双开。\
+                            请先退出它（托盘右键「完全退出」，或执行 taskkill /PID {pid} /T /F），再重新打开 DSH Desk。"
+                        ),
+                    );
+                } else {
+                    let reason = tail
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("未知原因")
+                        .trim()
+                        .chars()
+                        .take(120)
+                        .collect::<String>();
+                    notify(
+                        app,
+                        "DSH 已退出",
+                        &format!("服务进程意外终止：{reason}（完整日志见 dsh-desk-sidecar.log）"),
+                    );
+                }
+                break;
+            }
+            _ => {}
         }
     }
+}
+
+/// 从 stderr 中提取 harness 锁占用方的 PID（"… already owned by process 1234"）。
+fn parse_lock_owner(stderr: &str) -> Option<u32> {
+    let idx = stderr.find("already owned by process")?;
+    stderr[idx..]
+        .split_whitespace()
+        .nth(4)
+        .and_then(|s| s.trim_matches(|c: char| !c.is_ascii_digit()).parse().ok())
 }
 
 /// 检查并安装更新。manual = 用户从托盘触发（无更新/失败也弹通知）。
