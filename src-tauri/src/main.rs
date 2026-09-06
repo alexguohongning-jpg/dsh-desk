@@ -6,7 +6,7 @@
 //! - 自动更新：GitHub Releases + tauri-plugin-updater
 //!
 //! 启动流程：spawn `node <resources>/dsh-runtime/.../bin.js web --no-open --port 0`
-//! → 解析 stdout 中的 `http://127.0.0.1:<port>` → 等端口就绪 → 显示窗口并跳转。
+//! → 壳自选空闲端口传给 dsh → 轮询端口就绪后显示窗口并跳转（不解析 stdout：node 管道下块缓冲）。
 //! 退出/更新前用 taskkill /T /F 杀掉整棵进程树（dsh 会再 spawn 孙进程）。
 
 use std::net::TcpStream;
@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use regex::Regex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WindowEvent};
@@ -91,6 +90,15 @@ async fn start_dsh(app: &AppHandle) {
     let entry = resource_dir.join(DSH_ENTRY).to_string_lossy().to_string();
     let runtime_dir = resource_dir.join("dsh-runtime");
 
+    // 壳自己分配空闲端口传给 dsh：node 的 stdout 在管道下是块缓冲，
+    // 「dsh web: http://…」URL 行可能长期不 flush，靠解析它拿端口不可靠。
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
+        .unwrap_or(0);
+    let port_str = port.to_string();
+
     let mut command = match app.shell().sidecar("node") {
         Ok(c) => c,
         Err(e) => {
@@ -99,7 +107,7 @@ async fn start_dsh(app: &AppHandle) {
         }
     };
     command = command
-        .args([entry.as_str(), "web", "--no-open", "--port", "0"])
+        .args([entry.as_str(), "web", "--no-open", "--port", port_str.as_str()])
         // 显式指向现役 harness，不依赖外部环境变量碰巧存在
         .env("DSH_HOME", harness_home().unwrap_or_else(|| runtime_dir.clone()));
     // 让 dsh plugin（转发给 pnpm）能用内置 pnpm.exe
@@ -123,29 +131,20 @@ async fn start_dsh(app: &AppHandle) {
         .unwrap()
         .replace(child);
 
-    let url_re = Regex::new(r"https?://127\.0\.0\.1:(\d+)").unwrap();
-    let mut launched = false;
+    // 独立线程轮询端口就绪后显示窗口；主循环只排空子进程输出并检测退出。
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if wait_ready(port, 150) {
+            show_main(&handle, Some(port));
+        } else {
+            notify(&handle, "DSH 启动超时", "服务未在预期时间内就绪，请重新启动应用");
+        }
+    });
+
     while let Some(event) = rx.recv().await {
-        let bytes = match event {
-            CommandEvent::Stdout(b) | CommandEvent::Stderr(b) => b,
-            CommandEvent::Terminated(_) => {
-                if !launched {
-                    notify(app, "DSH 已退出", "服务进程意外终止，请重新启动应用");
-                }
-                break;
-            }
-            _ => continue,
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        if !launched {
-            if let Some(caps) = url_re.captures(&text) {
-                if let Ok(port) = caps[1].parse::<u16>() {
-                    if port > 0 && wait_ready(port, 50) {
-                        show_main(app, Some(port));
-                        launched = true;
-                    }
-                }
-            }
+        if let CommandEvent::Terminated(_) = event {
+            notify(app, "DSH 已退出", "服务进程意外终止，请重新启动应用");
+            break;
         }
     }
 }
