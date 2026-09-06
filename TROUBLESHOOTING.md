@@ -15,7 +15,7 @@ v0.1.2 起每次启动有 `===== shell spawn: cwd=… args=… =====` 分隔头�
 | 窗口一直「正在启动 DSH 服务…」，日志里没有 plugin 加载行 | → 坑 4（EISDIR） |
 | 窗口一直转圈，日志里服务正常、有 `dsh web:` 行 | → 坑 1（stdout 缓冲，旧版）或 token 未捕获 |
 | 窗口弹了但显示「127.0.0.1 拒绝连接」 | → 坑 2（Node 版本）或坑 3（双开锁） |
-| 能打开但停在 401 / 登录墙 | → 坑 5（token） |
+| 能打开但停在 401 / 登录墙 | → 坑 5（token）或坑 6（Strict cookie） |
 | 日志里 `already owned by process <PID>` | → 坑 3（双开锁），这是预期互斥不是 bug |
 
 ---
@@ -107,6 +107,23 @@ curl -o NUL -w "%{http_code}" "http://127.0.0.1:<port>/"  # 裸地址 401
 
 **修复**（v0.1.2 已含）：壳在排空 stdout 时用 `extract_dsh_url` 捕获完整带 token 的 URL
 （兼容行尾 ` (LAN: …)` 后缀），窗口跳转到该 URL。token 与端口齐备才导航。
+
+## 坑 6：token 带上了还是 401 —— eval 脚本导航扣下 SameSite=Strict cookie（v0.1.2）
+
+**症状**：页面显示 `dsh web authentication required; reopen the URL printed by dsh web.`，
+但日志里 token URL 明明已捕获、curl 验证 303→200 流程完全正常。
+
+**根因**：v0.1.2 用 `win.eval("location.replace('<token URL>')")` 发起导航。
+dsh 认证是「token URL → 303 + `Set-Cookie: SameSite=Strict` → 重定向到干净 `/`」流程；
+而脚本发起的导航带着 **跨站 initiator**（加载页在 `tauri.localhost` 域），
+Chromium 会在重定向的后续请求上**扣下 Strict cookie** → 服务端看到无凭证请求 → 401。
+手动粘贴网址或用 Chrome 打开没这个问题（无 initiator，等同同站）。
+
+**修复**（v0.1.3 已含）：改用 **`WebviewWindow::navigate()`**——浏览器进程发起导航，
+等同用户手动输入网址，Strict cookie 正常携带。
+**纪律：壳内跳转到 DSH 一律用 `navigate()`，永远不要 eval location 跳转。**
+
+**验证**：装完启动后窗口应直接进 DSH 对话界面；若仍是 401 文字页即此坑复发。
 
 ---
 
