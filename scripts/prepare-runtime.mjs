@@ -16,7 +16,7 @@ import path from "node:path";
 import os from "node:os";
 
 // ── 固定版本（升级时只改这里）───────────────────────────────────────────
-const NODE_VERSION = "22.14.0";        // Node 22 LTS
+const NODE_VERSION = "24.19.0";        // 对齐全局 dsh 实测可用的 Node（zstd API 需 >=22.15 / 24.x）
 const PNPM_VERSION = "10.9.0";         // pnpm standalone (win-x64)
 const DSH_VERSION = "0.1.2-rc.1";      // @deepseek-ai/dsh（当前全局安装的同版本）
 // ────────────────────────────────────────────────────────────────────────
