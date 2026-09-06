@@ -1,0 +1,13 @@
+{
+  "name": "dsh-desk",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DSH Desktop shell (Tauri 2 + sidecar node + bundled dsh runtime)",
+  "scripts": {
+    "prepare-runtime": "node scripts/prepare-runtime.mjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

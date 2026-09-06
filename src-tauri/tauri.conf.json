@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DSH Desk",
+  "version": "0.1.0",
+  "identifier": "com.dsh.desk",
+  "build": {
+    "beforeDevCommand": "node scripts/prepare-runtime.mjs --if-needed",
+    "beforeBuildCommand": "node scripts/prepare-runtime.mjs --if-needed",
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DSH",
+        "width": 1280,
+        "height": 800,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "externalBin": ["binaries/node"],
+    "resources": {
+      "resources/dsh-runtime": "dsh-runtime"
+    },
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/alexguohongning-jpg/dsh-desk/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRGRjk1NUMwMzhDOEVCRjcKUldUMzY4ZzR3Rlg1VCtEckhUQkZsL1J4MisxWUZocDlXWU5nZHM2TjRBeUl6Zi9tNTJnempraXUK",
+      "dialog": false
+    }
+  }
+}

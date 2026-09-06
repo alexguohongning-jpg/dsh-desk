@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install JS deps (tauri-cli)
+        run: npm install
+
+      - name: Assemble runtime (node.exe + pnpm.exe + dsh)
+        run: node scripts/prepare-runtime.mjs
+
+      - name: Build and release (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "DSH Desk ${{ github.ref_name }}"
+          releaseDraft: false
+          prerelease: false
+          # tauri-action 会自动生成 latest.json（updater 清单）并连同
+          # NSIS 安装包与 .sig 签名一起上传到该 Release

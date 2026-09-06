@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Shell drives everything from Rust; the web UI is remote and needs no IPC permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

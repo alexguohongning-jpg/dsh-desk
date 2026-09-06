@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>DSH</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0e14; color: #8b93a7;
+      display: flex; align-items: center; justify-content: center;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+    .box { text-align: center; }
+    .dot { width: 10px; height: 10px; margin: 0 5px; border-radius: 50%;
+      background: #4f6ef7; display: inline-block; animation: b 1.2s infinite ease-in-out; }
+    .dot:nth-child(2) { animation-delay: .15s; }
+    .dot:nth-child(3) { animation-delay: .3s; }
+    @keyframes b { 0%, 80%, 100% { transform: scale(.6); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
+    p { margin-top: 18px; font-size: 13px; letter-spacing: 1px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <p>正在启动 DSH 服务…</p>
+  </div>
+</body>
+</html>

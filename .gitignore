@@ -1,0 +1,10 @@
+node_modules/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/resources/
+src-tauri/.runtime-build/
+src-tauri/gen/schemas/
+.keys/
+.npm-cache/
+*.sig
+*.log
