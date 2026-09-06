@@ -5,8 +5,9 @@
 //! - 自包含：内置 node.exe + dsh 运行时（sidecar + resources）
 //! - 自动更新：GitHub Releases + tauri-plugin-updater
 //!
-//! 启动流程：spawn `node <resources>/dsh-runtime/.../bin.js web --no-open --port 0`
-//! → 壳自选空闲端口传给 dsh → 轮询端口就绪后显示窗口并跳转（不解析 stdout：node 管道下块缓冲）。
+//! 启动流程：壳自选空闲端口 → `node <DSH_ENTRY> web --no-open --port <p>`（cwd=resource_dir，相对路径传入口）
+//! → 从子进程 stdout 捕获带 token 的完整 URL（token 每进程随机，只此一个来源）
+//! → 窗口跳转到该 URL。stdout/stderr 全量写入 %APPDATA%\dsh-desktop\harness\dsh-desk-sidecar.log。
 //! 退出/更新前用 taskkill /T /F 杀掉整棵进程树（dsh 会再 spawn 孙进程）。
 //! sidecar stderr 全量写入 %APPDATA%\dsh-desktop\harness\dsh-desk-sidecar.log；
 //! 进程退出时若检测到 harness 锁冲突（task-board 独占锁，双开必崩），
@@ -63,17 +64,18 @@ fn kill_sidecar(app: &AppHandle) {
     }
 }
 
-/// 显示主窗口；带 port 时先把窗口导航到本地 DSH 服务。
-fn show_main(app: &AppHandle, port: Option<u16>) {
+/// 显示主窗口；带 url 时先把窗口导航到该地址（必须带 token，否则 401 登录墙）。
+fn show_main(app: &AppHandle, url: Option<&str>) {
     if let Some(win) = app.get_webview_window("main") {
-        if let Some(p) = port {
-            let _ = win.eval(&format!("location.replace('http://127.0.0.1:{p}/')"));
+        if let Some(u) = url {
+            let _ = win.eval(&format!("location.replace('{}')", u.replace('\'', "")));
         }
         let _ = win.show();
         let _ = win.set_focus();
     }
 }
 
+#[allow(dead_code)] // 保留：调试用 TCP 就绪探测
 fn wait_ready(port: u16, tries: u16) -> bool {
     for _ in 0..tries {
         if TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -84,6 +86,21 @@ fn wait_ready(port: u16, tries: u16) -> bool {
     false
 }
 
+/// 从 stdout 缓冲中提取带 token 的完整 URL（"dsh web: http://…?token=…"，可能带 " (LAN: …)" 后缀）。
+fn extract_dsh_url(stdout: &str) -> Option<String> {
+    let idx = stdout.find("dsh web: http")?;
+    let rest = &stdout[idx + "dsh web: ".len()..];
+    let url: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace())
+        .collect();
+    if url.contains("?token=") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
 async fn start_dsh(app: &AppHandle) {
     let resource_dir = match app.path().resource_dir() {
         Ok(p) => p,
@@ -92,7 +109,6 @@ async fn start_dsh(app: &AppHandle) {
             return;
         }
     };
-    let entry = resource_dir.join(DSH_ENTRY).to_string_lossy().to_string();
     let runtime_dir = resource_dir.join("dsh-runtime");
 
     // 壳自己分配空闲端口传给 dsh：node 的 stdout 在管道下是块缓冲，
@@ -111,8 +127,11 @@ async fn start_dsh(app: &AppHandle) {
             return;
         }
     };
+    // 用相对路径 + current_dir 传入口：绝对路径（含盘符/空格/中文）在 sidecar
+    // 参数传递中有被截断成 "C:" 的实证案例（EISDIR lstat 'C:'）。
     command = command
-        .args([entry.as_str(), "web", "--no-open", "--port", port_str.as_str()])
+        .current_dir(&resource_dir)
+        .args([DSH_ENTRY, "web", "--no-open", "--port", port_str.as_str()])
         // 显式指向现役 harness，不依赖外部环境变量碰巧存在
         .env("DSH_HOME", harness_home().unwrap_or_else(|| runtime_dir.clone()));
     // 让 dsh plugin（转发给 pnpm）能用内置 pnpm.exe
@@ -121,6 +140,19 @@ async fn start_dsh(app: &AppHandle) {
             "PATH",
             format!("{};{}", runtime_dir.to_string_lossy(), path),
         );
+    }
+
+    // 启动日志：先落 argv/cwd，再 spawn。stdout+stderr 全量进日志。
+    let log_path = harness_home().map(|h| h.join("dsh-desk-sidecar.log"));
+    if let Some(p) = log_path.as_ref() {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = writeln!(
+                f,
+                "\n===== shell spawn: cwd={:?} args={:?} =====",
+                resource_dir,
+                [DSH_ENTRY, "web", "--no-open", "--port", port_str.as_str()]
+            );
+        }
     }
 
     let (mut rx, child) = match command.spawn() {
@@ -136,18 +168,36 @@ async fn start_dsh(app: &AppHandle) {
         .unwrap()
         .replace(child);
 
-    // 独立线程轮询端口就绪后显示窗口；主循环只排空子进程输出并检测退出。
+    // 访问令牌只能来自子进程 stdout 的「dsh web: http://…?token=…」行
+    // （每进程随机生成，无配置项可固定）。端口由壳自选，token 由 stdout 捕获，
+    // 两者齐备才导航——少 token 就是 401 登录墙。
+    let token_url = std::sync::Arc::new(Mutex::new(Option::<String>::None));
+
+    // 独立线程：等 token URL 出现（端口就绪后 announceReady 才会打印），
+    // 最长等 90 秒；超时则区分「服务没起」与「起了但没抓到 token」分别提示。
     let handle = app.clone();
+    let url_for_thread = token_url.clone();
     std::thread::spawn(move || {
-        if wait_ready(port, 150) {
-            show_main(&handle, Some(port));
+        for _ in 0..450 {
+            let ready_url = url_for_thread.lock().unwrap().clone();
+            if let Some(u) = ready_url {
+                show_main(&handle, Some(&u));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            notify(
+                &handle,
+                "DSH 启动异常",
+                "服务已就绪但未捕获到访问令牌，请重启应用；日志见 dsh-desk-sidecar.log",
+            );
         } else {
             notify(&handle, "DSH 启动超时", "服务未在预期时间内就绪，请重新启动应用");
         }
     });
 
-    // sidecar stderr 全量落日志文件（排障用），同时内存里留尾部 60 行用于死因分析。
-    let log_path = harness_home().map(|h| h.join("dsh-desk-sidecar.log"));
+    // sidecar stdout/stderr 全量落日志文件（排障用），同时内存里留尾部 60 行用于死因分析。
     let mut log_file = log_path.as_ref().and_then(|p| {
         std::fs::OpenOptions::new()
             .create(true)
@@ -156,9 +206,26 @@ async fn start_dsh(app: &AppHandle) {
             .ok()
     });
     let mut stderr_tail: VecDeque<String> = VecDeque::with_capacity(61);
+    let mut stdout_buf = String::new();
 
     while let Some(event) = rx.recv().await {
         match event {
+            CommandEvent::Stdout(bytes) => {
+                let chunk = String::from_utf8_lossy(&bytes);
+                if let Some(f) = log_file.as_mut() {
+                    let _ = f.write_all(chunk.as_bytes());
+                }
+                stdout_buf.push_str(&chunk);
+                // 只保留尾部，防止长跑时缓冲无限增长（按换行符切，保证 UTF-8 边界安全）
+                if stdout_buf.len() > 8192 {
+                    if let Some(nl) = stdout_buf[4096..].find('\n') {
+                        stdout_buf.drain(..4096 + nl + 1);
+                    }
+                }
+                if let Some(u) = extract_dsh_url(&stdout_buf) {
+                    *token_url.lock().unwrap() = Some(u);
+                }
+            }
             CommandEvent::Stderr(bytes) => {
                 let line = String::from_utf8_lossy(&bytes).to_string();
                 if let Some(f) = log_file.as_mut() {
