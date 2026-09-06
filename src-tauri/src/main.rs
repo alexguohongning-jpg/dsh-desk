@@ -65,10 +65,15 @@ fn kill_sidecar(app: &AppHandle) {
 }
 
 /// 显示主窗口；带 url 时先把窗口导航到该地址（必须带 token，否则 401 登录墙）。
+/// 必须用 navigate()（浏览器进程发起、无跨站发起者）：303 种下的 SameSite=Strict
+/// cookie 在重定向请求上才会被携带；eval("location.replace") 由 tauri.localhost
+/// 页面的脚本发起，跨站 initiator 会导致 Strict cookie 被扣下 → 401。
 fn show_main(app: &AppHandle, url: Option<&str>) {
     if let Some(win) = app.get_webview_window("main") {
         if let Some(u) = url {
-            let _ = win.eval(&format!("location.replace('{}')", u.replace('\'', "")));
+            if let Ok(parsed) = tauri::Url::parse(u) {
+                let _ = win.navigate(parsed);
+            }
         }
         let _ = win.show();
         let _ = win.set_focus();
