@@ -19,7 +19,6 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_process::ProcessExt;
 use tauri_plugin_shell::process::{CommandEvent, CommandChild};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -45,8 +44,8 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
 
 /// 杀掉 sidecar 及其整棵进程树（幂等）。
 fn kill_sidecar(app: &AppHandle) {
-    let state: tauri::State<SidecarState> = app.state();
-    if let Some(child) = state.child.lock().unwrap().take() {
+    let taken = app.state::<SidecarState>().child.lock().unwrap().take();
+    if let Some(child) = taken {
         let pid = child.pid();
         let _ = child.kill();
         #[cfg(windows)]
@@ -99,13 +98,13 @@ async fn start_dsh(app: &AppHandle) {
             return;
         }
     };
-    command
+    command = command
         .args([entry.as_str(), "web", "--no-open", "--port", "0"])
         // 显式指向现役 harness，不依赖外部环境变量碰巧存在
         .env("DSH_HOME", harness_home().unwrap_or_else(|| runtime_dir.clone()));
     // 让 dsh plugin（转发给 pnpm）能用内置 pnpm.exe
     if let Ok(path) = std::env::var("PATH") {
-        command.env(
+        command = command.env(
             "PATH",
             format!("{};{}", runtime_dir.to_string_lossy(), path),
         );
@@ -172,7 +171,7 @@ fn check_update(app: &AppHandle, manual: bool) {
                 kill_sidecar(&handle);
                 match update.download_and_install(|_, _| {}, || {}).await {
                     Ok(()) => {
-                        let _ = handle.process().restart();
+                        handle.restart();
                     }
                     Err(e) => notify(&handle, "更新失败", &e.to_string()),
                 }
@@ -199,7 +198,6 @@ fn main() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SidecarState {
             child: Mutex::new(None),
