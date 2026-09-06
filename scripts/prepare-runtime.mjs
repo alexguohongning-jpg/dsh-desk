@@ -69,11 +69,13 @@ if (!existsSync(dshEntry)) {
   mkdirSync(buildTmp, { recursive: true });
   writeFileSync(path.join(buildTmp, "package.json"), JSON.stringify({ name: "dsh-runtime", private: true }));
   console.log(`[runtime] npm install @deepseek-ai/dsh@${DSH_VERSION} --omit=dev`);
-  execFileSync(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["install", `@deepseek-ai/dsh@${DSH_VERSION}`, "--omit=dev", "--no-audit", "--no-fund", "--ignore-scripts"],
-    { cwd: buildTmp, stdio: "inherit" }
-  );
+  const npmArgs = ["install", `@deepseek-ai/dsh@${DSH_VERSION}`, "--omit=dev", "--no-audit", "--no-fund", "--ignore-scripts"];
+  // Node 20+ 出于安全拒绝直接 spawn .cmd/.bat（EINVAL），Windows 下必须经 cmd.exe
+  execFileSync("npm", npmArgs, {
+    cwd: buildTmp,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
   rmSync(resourcesDir, { recursive: true, force: true });
   mkdirSync(resourcesDir, { recursive: true });
   cpSync(path.join(buildTmp, "node_modules"), path.join(resourcesDir, "node_modules"), { recursive: true });
